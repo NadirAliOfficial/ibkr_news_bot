@@ -113,4 +113,3 @@ python ibkr_news_bot.py
 * [IBKR TWS API](https://interactivebrokers.github.io/)
 * Developed by [@NadirAliOfficial](https://github.com/NadirAliOfficial)
 <!-- updated: 2025-12-06 -->
-
