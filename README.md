@@ -112,4 +112,4 @@ python ibkr_news_bot.py
 * [Benzinga Pro API](https://www.benzinga.com/pro)
 * [IBKR TWS API](https://interactivebrokers.github.io/)
 * Developed by [@NadirAliOfficial](https://github.com/NadirAliOfficial)
-<!-- updated: 2023-11-29-r01 -->
+<!-- updated: 2024-03-27-r01 -->
