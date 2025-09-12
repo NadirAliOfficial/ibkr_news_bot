@@ -1,0 +1,7 @@
+.env
+/logs
+/data
+__pycache__
+bz_news.db
+news.db
+test.py
