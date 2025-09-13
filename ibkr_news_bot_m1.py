@@ -83,15 +83,24 @@ def main():
     bz = BenzingaClient(API_KEY)
     matcher = KeywordMatcher(KEYWORDS)
     logger = NewsLogger()
+    WATCHLIST = set(SYMBOLS)
 
     print("Fetching news…")
     news = bz.get_news(SYMBOLS, limit=25)
 
+    WATCHLIST = {"AAPL","TSLA","DOW","SNAP","AI","UNFI"}
+
+
     for item in news:
+        stocks = {s.get("symbol") for s in item.get("stocks", []) if s.get("symbol")}
+        if not stocks & WATCHLIST:
+            continue  # skip if no overlap with your watchlist
+
         matches = matcher.match(item["title"])
         if matches:
             logger.save(item, matches)
             print(f"⚡ MATCH {matches}: {item['title']}")
+
 
 if __name__ == "__main__":
     main()
