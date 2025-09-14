@@ -455,15 +455,11 @@ class Bot:
                 # Persist the signal
                 store.save_news(item, matches, list(related))
                 evinfo(f"MATCH {list(related)} {matches} | {item.get('title')}")
-
-                # ---- Strategy (simple momentum bias):
-                # Long on "upgrade/beat/merger/record" ; Short on "downgrade/bankruptcy/miss/fraud"
-                long_trigs  = {"upgrade","beat","merger","record","guidance raise","acquisition"}
-                short_trigs = {"downgrade","bankruptcy","miss","fraud","restatement","investigation"}
+                # ---- Strategy (long-only):
+                long_trigs = {"upgrade","beat","merger","record","guidance raise","acquisition"}
 
                 text = (item.get("title","") + " " + item.get("description","")).lower()
-                go_long  = any(t in text for t in long_trigs)
-                go_short = any(t in text for t in short_trigs)
+                go_long = any(t in text for t in long_trigs)
 
                 for sym in related:
                     mid = trader._mid(sym)
@@ -471,29 +467,22 @@ class Bot:
                         evwarn(f"No midprice for {sym}; skip")
                         continue
 
-                    # compute entry/TP/SL
-                    if go_long and not go_short:
-                        side = "BUY"
-                        entry = mid  # could bias to bid/ask if you want
-                        tp    = entry * (1 + TP_PCT/100.0)
-                        sl    = entry * (1 - SL_PCT/100.0)
-                    elif go_short and not go_long:
-                        side = "SELL"
-                        entry = mid
-                        tp    = entry * (1 - TP_PCT/100.0)
-                        sl    = entry * (1 + SL_PCT/100.0)
-                    else:
-                        # Ambiguous signal; skip
-                        evinfo(f"Ambiguous signal (long+short) for {sym}; skip.")
+                    if not go_long:
+                        evinfo(f"No long trigger keywords for {sym}; skip.")
                         continue
 
-                    # Risk: respect max concurrent; iceberg optional
+                    side = "BUY"
+                    entry = mid
+                    tp = entry * (1 + TP_PCT/100.0)
+                    sl = entry * (1 - SL_PCT/100.0)
+
                     qty = ORDER_SIZE_SHARES
                     reason = f"news:{','.join(matches)}"
                     if ENABLE_ICEBERG and qty > ICEBERG_CHILD_QTY:
                         trader.iceberg(sym, side, qty, entry, tp, sl, reason)
                     else:
                         trader.place_bracket(sym, side, qty, entry, tp, sl, reason)
+
 
             except Exception as e:
                 log_exc("cycle item failed", e)
