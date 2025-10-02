@@ -5,3 +5,7 @@ __pycache__
 bz_news.db
 news.db
 test.py
+config.json
+/test_ws.py
+bot.log
+bz_bot.log
