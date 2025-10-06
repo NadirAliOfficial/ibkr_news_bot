@@ -1056,26 +1056,27 @@ class MainWindow(QMainWindow):
         new_cfg = load_config(CONFIG_PATH)
         self.cfg = new_cfg
 
-        # Refresh all UI pages with new config
-        self.page_sessions = SessionsPage(self.cfg)
-        self.tabs.removeTab(0)
-        self.tabs.insertTab(0, self.page_sessions, "Sessions & Connection")
+        # 🔥 FIX: Clear all existing tabs first
+        while self.tabs.count() > 0:
+            self.tabs.removeTab(0)
 
-        for _ in list(range(len(self.wpages))):
-            self.tabs.removeTab(1)
+        # Rebuild all tabs cleanly
+        self.page_sessions = SessionsPage(self.cfg)
+        self.tabs.addTab(self.page_sessions, "Sessions & Connection")
+
         self.wpages.clear()
         for w in self.cfg.watchlists:
             p = WatchlistPage(w, self)
             self.wpages.append(p)
-            self.tabs.insertTab(1+len(self.wpages)-1, p, w.name)
+            self.tabs.addTab(p, w.name)
 
         self.page_bands = OrderBandsPage(self.cfg.order_bands, self)
-        self.tabs.insertTab(1+len(self.wpages), self.page_bands, "Custom Order Sizing")
+        self.tabs.addTab(self.page_bands, "Custom Order Sizing")
 
         self.page_risk = RiskPage(self.cfg.risk, self)
-        self.tabs.insertTab(2+len(self.wpages), self.page_risk, "Risk & Safety")
+        self.tabs.addTab(self.page_risk, "Risk & Safety")
 
-        self.logger.info("UI reloaded from config.json")
+        self.logger.info("✅ UI reloaded from config.json successfully.")
 
     def _start_engine(self):
         cfg = self._collect()
