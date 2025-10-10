@@ -457,8 +457,8 @@ class Trader:
 # -----------------------------
 class BZWebSocket:
     def __init__(self, token: str, callback, tickers=None):
-        base = "wss://api.benzinga.com/api/v1/news/stream"   # ✅ correct endpoint
-        params = f"?token={token}"
+        base = "wss://api.benzinga.com/api/v1/news/stream"
+        params = f"?token={token}&format=json"
         if tickers:
             params += "&tickers=" + ",".join(tickers)
         self.url = base + params
@@ -469,18 +469,22 @@ class BZWebSocket:
         def _on_message(ws, msg):
             try:
                 data = json.loads(msg)
+                print(f"📰 WS message received at {datetime.now().strftime('%H:%M:%S')}")  # live console output
                 self.callback(data)
             except Exception as e:
-                print("WS parse error:", e)
+                print("⚠️ WS parse error:", e)
 
         def _on_error(ws, err):
-            print("WS error:", err)
+            print("❌ WS error:", err)
 
         def _on_close(ws, code, msg):
-            print("WS closed:", code, msg)
+            print(f"🔌 WS closed (code={code}) — reconnecting in 5s...")
+            time.sleep(5)
+            self.start()  # auto-reconnect loop
 
         def _on_open(ws):
-            print("✅ WS connected to Benzinga Analyst Insights stream")
+            print("✅ WS connected to Benzinga Websocket")
+            print("📡 Listening for live news stream...")
 
         self.ws = WebSocketApp(
             self.url,
@@ -494,6 +498,7 @@ class BZWebSocket:
             target=lambda: self.ws.run_forever(sslopt={"ca_certs": certifi.where()}),
             daemon=True
         ).start()
+
 
 # -----------------------------
 # Engine Thread (WebSocket + Volume filter)
@@ -560,57 +565,111 @@ class Engine(threading.Thread):
     def stop(self):
         self.running.clear()
 
-    # ---- Core NEWS handler ----
     def _on_news(self, item: dict):
         """
-        Handle incoming Benzinga Analyst Insight WebSocket message.
+        Handle incoming Benzinga WebSocket messages in real-time.
+        Logs every news event, matches watchlist symbols, 
+        filters by keywords, and triggers trades.
         """
         try:
-            # Extract the payload
-            content = item.get("data", {}).get("content", {})
-            title   = content.get("analyst_insights", "") or content.get("title", "")
-            sym     = content.get("security", {}).get("symbol", "")
+            # 1️⃣ Log raw incoming message
+            self.log.info(f"📰 RAW NEWS: {json.dumps(item)[:1000]}...")
 
-            # 1. Check if ticker is valid & in watchlist
-            if not sym or sym not in self.watch:
+            # 2️⃣ Extract JSON fields safely (matches real Benzinga schema)
+            data = item.get("data", {})
+            content = data.get("content", {}) or {}
+
+            title   = content.get("title", "") or ""
+            teaser  = content.get("teaser", "") or ""
+            body    = content.get("body", "") or ""
+            summary = content.get("summary", "") or ""
+            full_text = f"{title} {teaser} {summary} {body}".strip()
+
+            # 3️⃣ Try to extract symbol(s) robustly
+            sym = ""
+
+            if "securities" in content and isinstance(content["securities"], list) and content["securities"]:
+                sym = content["securities"][0].get("symbol", "")
+            elif "stocks" in content and isinstance(content["stocks"], list) and content["stocks"]:
+                sym = content["stocks"][0].get("symbol", "")
+            elif "tickers" in content and isinstance(content["tickers"], list) and content["tickers"]:
+                sym = content["tickers"][0]
+            elif "body" in content and "NASDAQ:" in content["body"]:
+                # fallback — extract from NASDAQ:<TICKER>
+                import re
+                m = re.search(r"NASDAQ:([A-Z]+)", content["body"])
+                if m:
+                    sym = m.group(1)
+
+            sym = sym.replace(":US", "").replace(".N", "").strip().upper()
+
+            # 4️⃣ Log parsed content
+            self.log.info(f"🧩 Parsed News: sym={sym or 'N/A'} | title='{title[:120]}'")
+
+            # 5️⃣ Validate symbol
+            if not sym:
+                self.log.info(f"⚠️ Skipping: no symbol detected in '{title[:80]}'")
+                return
+            if sym not in self.watch:
+                self.log.info(f"⏩ Skipping: {sym} not in watchlist ({len(self.watch)} symbols)")
                 return
 
-            # 2. Check if keywords matched
-            matches = self.matcher.match(title)
+            # 6️⃣ Keyword matching
+            matches = self.matcher.match(full_text)
             if not matches:
+                self.log.info(f"🔸 No keyword match for {sym}")
+                return
+            self.log.info(f"✅ Keyword match: {sym} | {matches}")
+
+            # 7️⃣ Check trading time window
+            if not now_in_any_window(self.cfg.window_am, self.cfg.window_pm):
+                self.log.info(f"🕒 Outside trading window for {sym}")
                 return
 
-            # 3. Log the match
-            self.log.info(f"WS MATCH {sym} {matches} | {title}")
+            # 8️⃣ Volume filter (safe for test mode)
+            if self.cfg.engine.test_mode or not self._ib.isConnected():
+                vol = 999999  # bypass volume in test mode
+                self.log.info(f"🧪 TEST MODE: Skipping IBKR volume check for {sym}")
+            else:
+                try:
+                    bars = self._ib.reqHistoricalData(
+                        Stock(sym, "SMART", "USD", primaryExchange="NASDAQ"),
+                        endDateTime="",
+                        durationStr="1 m",
+                        barSizeSetting="1 min",
+                        whatToShow="TRADES",
+                        useRTH=True
+                    )
+                    vol = bars[-1].volume if bars else 0
+                except Exception as e:
+                    self.log.error(f"Volume fetch failed for {sym}: {e}")
+                    vol = 0
 
-            # 4. Check traded volume in first minute
-            bars = self._ib.reqHistoricalData(
-                Stock(sym, "SMART", "USD", primaryExchange="NASDAQ"),
-                endDateTime="", 
-                durationStr="1 m",   # last 1 minute
-                barSizeSetting="1 min",
-                whatToShow="TRADES",
-                useRTH=True
-            )
-            if not bars or bars[-1].volume < self.cfg.risk.min_news_volume:
-                self.log.info(f"Skip {sym}: volume {bars[-1].volume if bars else 0} < {self.cfg.risk.min_news_volume}")
+            self.log.info(f"📊 Volume for {sym}: {vol}")
+            if vol < self.cfg.risk.min_news_volume:
+                self.log.info(f"⏩ Skipping: low volume {vol} < {self.cfg.risk.min_news_volume}")
                 return
 
-            # 5. Get mid price
+
+            # 9️⃣ Compute order details
             mid = self._trader._mid(sym, self.cfg.engine.test_mode)
-            tp  = mid * (1 + self.cfg.risk.tp_pct/100.0)
-            sl  = mid * (1 - self.cfg.risk.sl_pct/100.0)
+            tp  = mid * (1 + self.cfg.risk.tp_pct / 100)
+            sl  = mid * (1 - self.cfg.risk.sl_pct / 100)
             qty = self._qty_from_bands(mid)
             reason = f"news:{','.join(sorted(matches))}"
 
-            # 6. Place order (normal or iceberg)
+            # 🔟 Trigger trade
+            self.log.info(f"🚀 Trigger trade for {sym} | mid={mid:.2f} | qty={qty} | TP={tp:.2f} | SL={sl:.2f}")
+
             if self.cfg.risk.iceberg and qty > self.cfg.risk.iceberg_child_qty:
                 self._trader.iceberg(sym, qty, mid, tp, sl, reason, child_qty=self.cfg.risk.iceberg_child_qty)
             else:
                 self._trader.place_bracket(sym, qty, mid, tp, sl, reason)
 
         except Exception as e:
-            self.log.error(f"_on_news error: {e}")
+            self.log.error(f"❌ _on_news error: {e}\n{traceback.format_exc()}")
+
+
 
 
     def run(self):
@@ -644,7 +703,9 @@ class Engine(threading.Thread):
             self.log.error("No Benzinga API key set. Please set it in Sessions tab.")
             return
 
-        self.ws = BZWebSocket(self.cfg.benzinga_api_key, self._on_news, tickers=self.watch)
+        # self.ws = BZWebSocket(self.cfg.benzinga_api_key, self._on_news, tickers=self.watch)
+        self.ws = BZWebSocket(self.cfg.benzinga_api_key, self._on_news)
+
         self.ws.start()
 
 
