@@ -358,6 +358,7 @@ class Trader:
 
     def _stk(self, symbol: str) -> Stock:
         return Stock(symbol, "SMART", "USD", primaryExchange="NASDAQ")
+        # return Stock(symbol, "ISLAND", "USD")
 
     def _mid(self, symbol: str, test_mode: bool, price_source: str = "mid") -> float:
         try:
@@ -365,6 +366,9 @@ class Trader:
             if not ticker_list:
                 raise RuntimeError("No ticker data")
             t: Ticker = ticker_list[0]
+
+            # 💡 Add this debug line here
+            self.log.info(f"DEBUG: {symbol} bid={t.bid}, ask={t.ask}, last={t.last}")
 
             if price_source == "bid" and t.bid:
                 return round(float(t.bid), 2)
@@ -567,7 +571,8 @@ class Engine(threading.Thread):
         for b in self.cfg.order_bands:
             if b.min_price <= price < b.max_price:
                 return max(1, int(b.shares))
-        return 50  # fallback
+        return int(self.cfg.order_bands[-1].shares)  # use last band as fallback
+
 
     def _get_first_minute_volume(self, symbol: str, news_time: datetime) -> int:
         """Fetch 1-min bar volume for the minute the news was released (RTH only)."""
@@ -733,6 +738,8 @@ class Engine(threading.Thread):
         # Connect IBKR
         try:
             self._ib.connect(self.cfg.ibkr_host, self.cfg.ibkr_port, self.cfg.ibkr_client_id, readonly=False)
+            self._ib.reqMarketDataType(1)  # 1 = Live data (use 4 for delayed-frozen if no live subscription)
+            self.log.info("✅ IBKR connected and market data type set to LIVE.")
         except Exception as e:
             self.log.error(f"Failed to connect IBKR: {e}")
             return
