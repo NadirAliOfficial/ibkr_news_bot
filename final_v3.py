@@ -361,32 +361,35 @@ class Trader:
         # return Stock(symbol, "ISLAND", "USD")
 
     def _mid(self, symbol: str, test_mode: bool, price_source: str = "mid") -> float:
+        """
+        Returns mid price for symbol. If test_mode=True or no market data, fallback to 100.00.
+        """
+        # ✅ Always return fallback immediately when in test mode
+        if test_mode:
+            self.log.info(f"[TEST_MODE] Using fallback 100.00 for {symbol}")
+            return 100.00
+
         try:
             ticker_list = self.ib.reqTickers(self._stk(symbol))
             if not ticker_list:
                 raise RuntimeError("No ticker data")
-            t: Ticker = ticker_list[0]
-
-            # 💡 Add this debug line here
-            self.log.info(f"DEBUG: {symbol} bid={t.bid}, ask={t.ask}, last={t.last}")
+            t = ticker_list[0]
 
             if price_source == "bid" and t.bid:
                 return round(float(t.bid), 2)
             elif price_source == "ask" and t.ask:
                 return round(float(t.ask), 2)
+            elif t.bid and t.ask:
+                return round((t.bid + t.ask) / 2, 2)
+            elif t.last:
+                return round(float(t.last), 2)
             else:
-                # default to mid
-                if t.bid and t.ask:
-                    return round((t.bid + t.ask) / 2, 2)
-                elif t.last:
-                    return round(float(t.last), 2)
+                raise RuntimeError("No valid market data")
 
         except Exception as e:
-            if test_mode:
-                self.log.info(f"[TEST_MODE] No live price for {symbol}; using fallback 100.00 ({e})")
-            else:
-                self.log.warning(f"No live price for {symbol}; using fallback 100.00 ({e})")
+            self.log.warning(f"No live price for {symbol}; fallback 100.00 ({e})")
             return 100.00
+
 
     def _bracket(self, qty: int, entry: float, tp: float, sl: float) -> List[Order]:
         parent = LimitOrder("BUY", qty, round(entry, 2))
@@ -1239,7 +1242,7 @@ class MainWindow(QMainWindow):
         self.logger.info("🛑 Engine stopped.")
 
 # -----------------------------
-# Entry
+# Entry§§
 # -----------------------------
 if __name__ == "__main__":
     app = QApplication(sys.argv)
