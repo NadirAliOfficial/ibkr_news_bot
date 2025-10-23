@@ -357,7 +357,8 @@ class Trader:
         self.ib.errorEvent        += self._on_error
 
     def _stk(self, symbol: str) -> Stock:
-        return Stock(symbol, "SMART", "USD", primaryExchange="NASDAQ")
+        # return Stock(symbol, "SMART", "USD", primaryExchange="NASDAQ") # default
+        return Stock(symbol, "CBOE", "USD") # cheaper market data
         # return Stock(symbol, "ISLAND", "USD")
 
     def _mid(self, symbol: str, test_mode: bool, price_source: str = "mid") -> float:
