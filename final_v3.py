@@ -11,6 +11,7 @@ import pandas as pd
 import certifi
 from ib_insync import IB, Stock, Ticker, LimitOrder, MarketOrder, Order
 
+
 from PySide6.QtWidgets import (
     QApplication, QWidget, QMainWindow, QTabWidget, QFileDialog, QMessageBox,
     QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QLineEdit, QTextEdit,
@@ -27,6 +28,16 @@ try:
 except Exception:
     pass
 # --------------------------------------------------------------------
+
+import asyncio
+def run_async_threadsafe(coro):
+    """Run IBKR async coroutines safely from threads (prevents 'no event loop' errors)."""
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
 
 # -----------------------------
 # Paths & constants
@@ -358,38 +369,52 @@ class Trader:
 
     def _stk(self, symbol: str) -> Stock:
         # return Stock(symbol, "SMART", "USD", primaryExchange="NASDAQ") # default
-        return Stock(symbol, "CBOE", "USD") # cheaper market data
+        return Stock(symbol, "SMART", "USD") # default
+        # return Stock(symbol, "CBOE", "USD") # cheaper market data
         # return Stock(symbol, "ISLAND", "USD")
 
     def _mid(self, symbol: str, test_mode: bool, price_source: str = "mid") -> float:
-        """
-        Returns mid price for symbol. If test_mode=True or no market data, fallback to 100.00.
-        """
-        # ✅ Always return fallback immediately when in test mode
         if test_mode:
             self.log.info(f"[TEST_MODE] Using fallback 100.00 for {symbol}")
             return 100.00
-
         try:
-            ticker_list = self.ib.reqTickers(self._stk(symbol))
-            if not ticker_list:
-                raise RuntimeError("No ticker data")
-            t = ticker_list[0]
+            contract = Stock(symbol, "SMART", "USD", primaryExchange="NASDAQ")
+           # Use async-safe calls to avoid runtime warnings
+            run_async_threadsafe(self.ib.qualifyContractsAsync(contract))
+            self.ib.reqMarketDataType(1)
+            ticker = self.ib.reqMktData(contract, '', False, False)
 
-            if price_source == "bid" and t.bid:
-                return round(float(t.bid), 2)
-            elif price_source == "ask" and t.ask:
-                return round(float(t.ask), 2)
-            elif t.bid and t.ask:
-                return round((t.bid + t.ask) / 2, 2)
-            elif t.last:
-                return round(float(t.last), 2)
+
+            # wait up to 5 s for data
+            for _ in range(5):
+                self.ib.sleep(1)
+                if ticker.bid or ticker.ask or ticker.last:
+                    break
+
+            bid = float(ticker.bid or 0)
+            ask = float(ticker.ask or 0)
+            last = float(ticker.last or 0)
+
+            if price_source == "bid" and bid:
+                mid = bid
+            elif price_source == "ask" and ask:
+                mid = ask
+            elif bid and ask:
+                mid = (bid + ask) / 2
+            elif last:
+                mid = last
             else:
-                raise RuntimeError("No valid market data")
+                mid = 100.00
 
+            mid = round(mid, 2)
+            self.log.info(f"[MID_PRICE] {symbol} → {mid}")
+            return mid
         except Exception as e:
-            self.log.warning(f"No live price for {symbol}; fallback 100.00 ({e})")
+            self.log.warning(f"[FALLBACK] No price for {symbol}, using 100.00 ({e})")
             return 100.00
+
+
+
 
 
     def _bracket(self, qty: int, entry: float, tp: float, sl: float) -> List[Order]:
@@ -570,6 +595,22 @@ class Engine(threading.Thread):
         except Exception as e:
             self.log.warning(f"P&L read failed: {e}")
             return 0.0
+        
+    # For testing: manual news injection`
+    def inject_news(self, symbol: str, title: str):
+        """Manually inject a fake news event (for testing)."""
+        fake = {
+            "data": {
+                "content": {
+                    "title": title,
+                    "body": f"<p>(NASDAQ:<a class='ticker'>{symbol}</a>) {title}</p>",
+                    "securities": [{"symbol": symbol}],
+                }
+            }
+        }
+        self.log.info(f"🧪 Injecting fake news for {symbol}: {title}")
+        self._on_news(fake)
+        print(f"🧪 Injected fake news for {symbol}: {title}")
 
     def _qty_from_bands(self, price: float) -> int:
         for b in self.cfg.order_bands:
@@ -587,14 +628,16 @@ class Engine(threading.Thread):
             aligned = news_time.astimezone(EST).replace(second=0, microsecond=0)
             end = aligned + pd.Timedelta(minutes=1)
 
-            bars = self._ib.reqHistoricalData(
+            bars = run_async_threadsafe(
+            self._ib.reqHistoricalDataAsync(
                 contract,
                 endDateTime=end,
                 durationStr="1 M",
                 barSizeSetting="1 min",
                 whatToShow="TRADES",
                 useRTH=True
-            )
+            ))
+
             if not bars:
                 return 0
             return int(getattr(bars[0], "volume", 0) or 0)
@@ -693,15 +736,7 @@ class Engine(threading.Thread):
                 self.log.info(f"🧪 TEST MODE: Skipping IBKR volume check for {sym}")
             else:
                 try:
-                    bars = self._ib.reqHistoricalData(
-                        Stock(sym, "SMART", "USD", primaryExchange="NASDAQ"),
-                        endDateTime="",
-                        durationStr="1 m",
-                        barSizeSetting="1 min",
-                        whatToShow="TRADES",
-                        useRTH=True
-                    )
-                    vol = bars[-1].volume if bars else 0
+                    vol = self._get_first_minute_volume(sym, datetime.now(EST))
                 except Exception as e:
                     self.log.error(f"Volume fetch failed for {sym}: {e}")
                     vol = 0
