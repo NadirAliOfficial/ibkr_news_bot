@@ -377,24 +377,30 @@ class Trader:
         if test_mode:
             self.log.info(f"[TEST_MODE] Using fallback 100.00 for {symbol}")
             return 100.00
+
         try:
             contract = Stock(symbol, "SMART", "USD", primaryExchange="NASDAQ")
-           # Use async-safe calls to avoid runtime warnings
             run_async_threadsafe(self.ib.qualifyContractsAsync(contract))
             self.ib.reqMarketDataType(1)
+            self.log.info(f"🔍 IBKR connected={self.ib.isConnected()} marketDataType={self.ib.marketDataType()}")
+
+
             ticker = self.ib.reqMktData(contract, '', False, False)
+            self.log.info(f"[MID_REQUEST] Waiting for data: {symbol}")
 
-
-            # wait up to 5 s for data
-            for _ in range(5):
+            # Wait up to 10 seconds for at least one valid bid/ask
+            for i in range(10):
                 self.ib.sleep(1)
-                if ticker.bid or ticker.ask or ticker.last:
+                if ticker.bid and ticker.ask:
+                    break
+                elif ticker.last:
                     break
 
-            bid = float(ticker.bid or 0)
-            ask = float(ticker.ask or 0)
-            last = float(ticker.last or 0)
+            bid = ticker.bid or 0
+            ask = ticker.ask or 0
+            last = ticker.last or 0
 
+            # Calculate mid
             if price_source == "bid" and bid:
                 mid = bid
             elif price_source == "ask" and ask:
@@ -404,15 +410,19 @@ class Trader:
             elif last:
                 mid = last
             else:
-                mid = 100.00
+                self.log.warning(f"[NO_DATA] {symbol} has no quotes yet, retrying delayed snapshot.")
+                snapshot = self.ib.reqMktData(contract, '', True, False)  # snapshot mode
+                self.ib.sleep(2)
+                mid = (snapshot.bid + snapshot.ask) / 2 if snapshot.bid and snapshot.ask else (snapshot.last or 100)
 
             mid = round(mid, 2)
-            self.log.info(f"[MID_PRICE] {symbol} → {mid}")
+            self.log.info(f"[MID_PRICE] {symbol} = {mid} (bid={bid}, ask={ask}, last={last})")
+            self.ib.cancelMktData(contract)
             return mid
+
         except Exception as e:
             self.log.warning(f"[FALLBACK] No price for {symbol}, using 100.00 ({e})")
             return 100.00
-
 
 
 
@@ -569,13 +579,13 @@ class BZWebSocket:
 # Engine Thread (WebSocket + Volume filter)
 # -----------------------------
 class Engine(threading.Thread):
-    def __init__(self, cfg: AppCfg, log: logging.Logger, store: Store):
+    def __init__(self, cfg: AppCfg, log: logging.Logger, store: Store, ib: IB):
         super().__init__(daemon=True)
         self.cfg = cfg
         self.log = log
         self.store = store
         self.running = threading.Event()
-        self._ib = IB()
+        self._ib = ib  # Use passed-in IB instance
         self._trader: Optional[Trader] = None
         self.ws: Optional[BZWebSocket] = None
         self.matcher: Optional[KeywordMatcher] = None
@@ -755,6 +765,8 @@ class Engine(threading.Thread):
 
             # Trigger trade safely on IB loop
             self.log.info(f"🚀 Trigger trade for {sym} | mid={mid:.2f} | qty={qty} | TP={tp:.2f} | SL={sl:.2f}")
+            self.log.info(f"⚙️ Debug Trade Trigger: loop={self._loop is not None}, IBConnected={self._ib.isConnected()}, TraderExists={self._trader is not None}")
+
             if getattr(self, "_loop", None):
                 self._loop.call_soon_threadsafe(self._place_trade_on_loop, sym, mid, tp, sl, qty, reason)
             else:
@@ -774,14 +786,18 @@ class Engine(threading.Thread):
         loop = asyncio.get_event_loop()
         self._loop = loop
 
-        # Connect IBKR
-        try:
-            self._ib.connect(self.cfg.ibkr_host, self.cfg.ibkr_port, self.cfg.ibkr_client_id, readonly=False)
-            self._ib.reqMarketDataType(1)  # 1 = Live data (use 4 for delayed-frozen if no live subscription)
-            self.log.info("✅ IBKR connected and market data type set to LIVE.")
-        except Exception as e:
-            self.log.error(f"Failed to connect IBKR: {e}")
+        # --- IBKR CONNECTION: ALREADY DONE IN GUI THREAD ---
+        if not self._ib.isConnected():
+            self.log.error("IBKR is not connected! Connection must be established in the main GUI thread.")
             return
+
+        try:
+            self._ib.reqMarketDataType(1)  # Live data
+            self.log.info("IBKR already connected. Using existing session. Market data type set to LIVE.")
+        except Exception as e:
+            self.log.error(f"Failed to set market data type: {e}")
+            return
+
 
         # Prepare keyword matcher & trader
         all_keywords = sorted({k.strip().lower()
@@ -1249,25 +1265,21 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Benzinga API Key", 
                                 "Please enter your Benzinga API key in Sessions tab.")
             return
-        
-        ib = IB()
 
+        # CONNECT IBKR HERE FIRST
+        ib = IB()
         try:
-            # Quick probe to IBKR
-            test_ib = IB()
-            test_ib.connect(cfg.ibkr_host, cfg.ibkr_port, cfg.ibkr_client_id, readonly=False)
-            test_ib.disconnect()
+            ib.connect(cfg.ibkr_host, cfg.ibkr_port, cfg.ibkr_client_id)
+            self.logger.info("IBKR connected successfully in main thread.")
         except Exception as e:
-            QMessageBox.warning(self, "IBKR Connection Error", 
-                                f"Failed to connect to IBKR:\n{e}")
+            QMessageBox.critical(self, "IBKR Connection Failed", f"Cannot connect to TWS/IB Gateway:\n{e}")
             return
 
-        # Launch engine thread
-        self.engine = Engine(cfg, self.logger, self.store)
-        self.engine._ib = ib  # share the IB instance to reuse session
+        # NOW pass the connected IB instance
+        self.engine = Engine(cfg, self.logger, self.store, ib)
         self.engine.start()
         self._ui_update_state(running=True)
-        self.logger.info("✅ Engine started.")
+        self.logger.info("Engine started with connected IB instance.")
 
     def _stop_engine(self):
         if self.engine:
