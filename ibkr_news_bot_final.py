@@ -10,6 +10,7 @@ from websocket import WebSocketApp
 import pandas as pd
 import certifi
 from ib_insync import IB, Stock, Ticker, LimitOrder, MarketOrder, Order
+import math
 
 
 from PySide6.QtWidgets import (
@@ -387,47 +388,49 @@ class Trader:
         # return Stock(symbol, "CBOE", "USD") # cheaper market data
         # return Stock(symbol, "ISLAND", "USD")
 
+
     def _mid(self, symbol: str, test_mode: bool, price_source: str = "mid") -> float:
         if test_mode:
             self.log.info(f"[TEST_MODE] Using fallback 100.00 for {symbol}")
             return 100.00
         try:
-            contract = Stock(symbol, "SMART", "USD", primaryExchange="NASDAQ")
-           # Use async-safe calls to avoid runtime warnings
+            contract = Stock(symbol, "SMART", "USD")   # no hard primaryExchange
             run_async_threadsafe(self.ib.qualifyContractsAsync(contract))
-            self.ib.reqMarketDataType(1)
-            ticker = self.ib.reqMktData(contract, '', False, False)
+            self.ib.reqMarketDataType(1)               # live data
+            ticker = self.ib.reqMktData(contract, "", False, False)
 
-
-            # wait up to 5 s for data
             for _ in range(5):
                 self.ib.sleep(1)
-                if ticker.bid or ticker.ask or ticker.last:
+                bid = ticker.bid
+                ask = ticker.ask
+                last = ticker.last
+                if any(map(lambda x: isinstance(x, (int, float)) and math.isfinite(x) and x > 0, [bid, ask, last])):
                     break
 
-            bid = float(ticker.bid or 0)
-            ask = float(ticker.ask or 0)
-            last = float(ticker.last or 0)
+            # clean conversion
+            def _num(x):
+                return float(x) if isinstance(x, (int, float)) and math.isfinite(x) else 0.0
 
-            if price_source == "bid" and bid:
+            bid, ask, last = _num(ticker.bid), _num(ticker.ask), _num(ticker.last)
+
+            if price_source == "bid" and bid > 0:
                 mid = bid
-            elif price_source == "ask" and ask:
+            elif price_source == "ask" and ask > 0:
                 mid = ask
-            elif bid and ask:
-                mid = (bid + ask) / 2
-            elif last:
+            elif bid > 0 and ask > 0:
+                mid = (bid + ask) / 2.0
+            elif last > 0:
                 mid = last
             else:
-                mid = 100.00
+                raise ValueError("no valid quote")
 
             mid = round(mid, 2)
             self.log.info(f"[MID_PRICE] {symbol} → {mid}")
             return mid
+
         except Exception as e:
             self.log.warning(f"[FALLBACK] No price for {symbol}, using 100.00 ({e})")
             return 100.00
-
-
 
 
 
@@ -501,16 +504,20 @@ class Trader:
     # --- IB Events
     def _on_exec(self, trade, fill):
         try:
-            exec_id = fill.execId
-            oid     = trade.order.orderId
-            sym     = trade.contract.symbol
-            side    = trade.order.action
-            qty     = int(fill.execution.shares)
-            price   = float(fill.execution.price)
+            exec_id = getattr(fill, "execId", None) or getattr(fill.execution, "execId", None)
+            if not exec_id:
+                self.log.warning("⚠️ Skipping fill without execId")
+                return
+            oid   = trade.order.orderId
+            sym   = trade.contract.symbol
+            side  = trade.order.action
+            qty   = int(getattr(fill.execution, "shares", 0))
+            price = float(getattr(fill.execution, "price", 0.0))
             self.store.save_fill(exec_id, oid, sym, side, qty, price)
             self.log.info(f"FILL {sym} {side} {qty}@{price} (oid {oid}, exec {exec_id})")
         except Exception as e:
             self.log.error(f"on_exec failed: {e}")
+
 
     def _on_status(self, trade):
         try:
@@ -649,6 +656,9 @@ class Engine(threading.Thread):
                 self.log.info(f"⏩ Skip {sym}: vol={vol}")
                 return
             mid = self._trader._mid(sym, False, self.cfg.engine.price_source)
+            if not isinstance(mid, (int, float)) or not math.isfinite(mid) or mid <= 0:
+                self.log.warning(f"⚠️ Invalid mid={mid} for {sym}; skipping trade.")
+                return
             tp  = mid * (1 + self.cfg.risk.tp_pct / 100)
             sl  = mid * (1 - self.cfg.risk.sl_pct / 100)
             qty = self._qty_from_bands(mid)
