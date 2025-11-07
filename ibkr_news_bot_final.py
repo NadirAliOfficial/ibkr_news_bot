@@ -85,7 +85,7 @@ class RiskCfg:
 
 @dataclass
 class EngineCfg:
-    poll_seconds: int = 30
+    poll_seconds: int = 12
     test_mode: bool = True  # uses fallback mid=100 if no market data
     price_source: str = "mid"  # bid | mid | ask
 
@@ -365,6 +365,24 @@ class KeywordMatcher:
     def match(self, text: str) -> List[str]:
         text = (text or "").lower()
         return list({kw for _, kw in self.automaton.iter(text)})
+    
+
+# --- Order sanitation helper ---
+from ib_insync import Order
+
+def sanitize_order(order: Order):
+    """Remove all volatility/algo fields that cause 321 errors."""
+    for attr in (
+        "volatility", "volatilityType", "continuousUpdate", "referencePriceType",
+        "deltaNeutralOrderType", "deltaNeutralAuxPrice", "deltaNeutralConId",
+        "deltaNeutralSettlingFirm", "deltaNeutralClearingAccount", "deltaNeutralClearingIntent",
+        "algoStrategy", "algoParams", "stockRangeLower", "stockRangeUpper"
+    ):
+        if hasattr(order, attr):
+            setattr(order, attr, None)
+    order.overridePercentageConstraints = True
+    return order
+
 
 # -----------------------------
 # Trader
@@ -453,14 +471,12 @@ class Trader:
         sl_order.transmit = True     # final child transmits chain
         sl_order.tif = "GTC"
         sl_order.outsideRth = True
-
-        # Force IBKR to allow wider TP/SL distance
-        parent.overridePercentageConstraints = True
-        tp_order.overridePercentageConstraints = True
-        sl_order.overridePercentageConstraints = True
-
+        # Clean up any leftover volatility/algo fields that IBKR may reject
+        for o in (parent, tp_order, sl_order):
+            sanitize_order(o)
 
         return [parent, tp_order, sl_order]
+
 
     def _can_trade(self) -> bool:
         return len(self.open_parent_oids) < self.max_concurrent
