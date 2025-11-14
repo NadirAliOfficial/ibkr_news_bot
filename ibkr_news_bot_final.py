@@ -22,12 +22,14 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QDate, QObject, Signal
 
 # --- Console encoding fix (prevents UnicodeEncodeError on Windows) ---
-import sys as _sys
-try:
-    _sys.stdout.reconfigure(encoding="utf-8")
-    _sys.stderr.reconfigure(encoding="utf-8")
-except Exception:
-    pass
+import sys
+if sys.platform.startswith("win"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except:
+        pass
+
 # --------------------------------------------------------------------
 
 import asyncio
@@ -356,15 +358,18 @@ class BenzingaClient:
 # -----------------------------
 class KeywordMatcher:
     def __init__(self, keywords: List[str]):
-        self.automaton = ahocorasick.Automaton()
-        for kw in keywords:
-            k = kw.strip().lower()
-            if k:
-                self.automaton.add_word(k, k)
-        self.automaton.make_automaton()
+        self.keywords = [kw.strip().lower() for kw in keywords if kw.strip()]
+
     def match(self, text: str) -> List[str]:
         text = (text or "").lower()
-        return list({kw for _, kw in self.automaton.iter(text)})
+        matches = []
+        for kw in self.keywords:
+            # whole word match: \bkeyword\b
+            pattern = rf"\b{re.escape(kw)}\b"
+            if re.search(pattern, text):
+                matches.append(kw)
+        return matches
+
     
 
 # --- Order sanitation helper ---
@@ -456,7 +461,7 @@ class Trader:
         parent = LimitOrder("BUY", qty, round(entry, 2))
         parent.transmit = False
         parent.tif = "GTC"           # default TIF
-        parent.outsideRth = True     # allow extended hours
+        parent.outsideRth = False     # allow extended hours
 
         tp_order = LimitOrder("SELL", qty, round(tp, 2))
         tp_order.transmit = False
