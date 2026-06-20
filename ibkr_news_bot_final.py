@@ -27,7 +27,7 @@ if sys.platform.startswith("win"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
         sys.stderr.reconfigure(encoding="utf-8")
-    except:
+    except Exception:
         pass
 
 # --------------------------------------------------------------------
@@ -293,7 +293,7 @@ class Store:
             self.conn.execute("INSERT INTO events(ts,level,message) VALUES(?,?,?)",
                               (datetime.now(EST).isoformat(), level, message))
             self.conn.commit()
-        except:
+        except Exception:
             pass
 
 # -----------------------------
@@ -350,7 +350,7 @@ class BenzingaClient:
         try:
             data = r.json()
             return data if isinstance(data, list) else []
-        except:
+        except Exception:
             return []
 
 # -----------------------------
@@ -850,7 +850,7 @@ class Engine(threading.Thread):
         try:
             if self._ib.isConnected():
                 self._ib.disconnect()
-        except:
+        except Exception:
             pass
         self.log.info("Engine stopped.")
 
@@ -980,7 +980,7 @@ class OrderBandsPage(QWidget):
                 sh = int(float(self.table.item(r, 2).text()))
                 if mx <= mn or sh <= 0: continue
                 bands.append(OrderBand(mn, mx, sh))
-            except:
+            except Exception:
                 continue
         return bands
 
