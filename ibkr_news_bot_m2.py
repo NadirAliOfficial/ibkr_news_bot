@@ -200,7 +200,7 @@ class Trader:
         return Stock(symbol, "SMART", "USD", primaryExchange="NASDAQ")
 
     # Additional Data Subscription and For LIVE MODE
-    
+
     # def _mid(self, symbol: str, retries=3) -> Optional[float]:
     #     c = self._stk(symbol)
     #     for _ in range(retries):
@@ -214,7 +214,7 @@ class Trader:
     #         time.sleep(0.5)
     #     return None
 
-    
+
     # Mocked Midprice for TEST MODE (no market data subscription needed)
 
     def _mid(self, symbol: str, retries=1) -> Optional[float]:
