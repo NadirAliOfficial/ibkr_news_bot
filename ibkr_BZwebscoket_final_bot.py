@@ -568,7 +568,7 @@ class Engine(threading.Thread):
     def _on_news(self, item: dict):
         """
         Handle incoming Benzinga WebSocket messages in real-time.
-        Logs every news event, matches watchlist symbols, 
+        Logs every news event, matches watchlist symbols,
         filters by keywords, and triggers trades.
         """
         try:
@@ -1144,10 +1144,10 @@ class MainWindow(QMainWindow):
         save_config(cfg, CONFIG_PATH)
 
         if not cfg.benzinga_api_key:
-            QMessageBox.warning(self, "Benzinga API Key", 
+            QMessageBox.warning(self, "Benzinga API Key",
                                 "Please enter your Benzinga API key in Sessions tab.")
             return
-        
+
         ib = IB()
 
         try:
@@ -1156,7 +1156,7 @@ class MainWindow(QMainWindow):
             test_ib.connect(cfg.ibkr_host, cfg.ibkr_port, cfg.ibkr_client_id, readonly=False)
             test_ib.disconnect()
         except Exception as e:
-            QMessageBox.warning(self, "IBKR Connection Error", 
+            QMessageBox.warning(self, "IBKR Connection Error",
                                 f"Failed to connect to IBKR:\n{e}")
             return
 
